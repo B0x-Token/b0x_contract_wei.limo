@@ -1,0 +1,12 @@
+{
+  "name": "b0x-site-uploader",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "upload": "node upload.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "ethers": "^6.13.0"
+  }
+}
