@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bzerox.wei</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: #0b0f0d; color: #e8f0ec;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .card { text-align: center; max-width: 340px; padding: 0 16px; }
+  .card h1 { font-size: 1rem; margin: 0 0 6px; }
+  .card .sub { color: #8fa39a; font-size: 0.85rem; margin-bottom: 22px; }
+  button {
+    display: block; width: 100%; margin-bottom: 10px;
+    background: #35d68a; color: #06120c; border: none;
+    border-radius: 8px; padding: 11px 16px; font-weight: 600; font-size: 0.9rem;
+    cursor: pointer;
+  }
+  button.secondary { background: transparent; color: #e8f0ec; border: 1px solid #24302b; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #status { font-size: 0.82rem; color: #8fa39a; margin-top: 14px; min-height: 1.2em; }
+  #status.err { color: #e5484d; }
+  #status a { color: #35d68a; }
+  .contract-line { font-size: 0.75rem; color: #566761; margin-top: 18px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .contract-line a { color: #35d68a; text-decoration: none; }
+  .contract-line a:hover { text-decoration: underline; }
+  .rpc-field { text-align: left; margin-top: 18px; }
+  .rpc-field label { display: block; font-size: 0.78rem; color: #8fa39a; margin-bottom: 5px; }
+  .rpc-field input {
+    width: 100%; box-sizing: border-box; background: #0e1512; color: #e8f0ec;
+    border: 1px solid #24302b; border-radius: 8px; padding: 9px 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem;
+  }
+  .rpc-field input:focus { outline: none; border-color: #35d68a; }
+  .rpc-field .hint { font-size: 0.72rem; color: #566761; margin-top: 4px; }
+  .rpc-field .rpc-restore {
+    display: inline-block; width: auto; margin: 8px 0 0; padding: 5px 10px;
+    background: transparent; border: 1px solid #24302b; color: #8fa39a; font-size: 0.72rem; font-weight: 500;
+  }
+  .rpc-field .rpc-restore:hover { border-color: #35d68a; color: #35d68a; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1><a href="https://wei.domains/#bzerox" style="color: green;">bzerox.wei</a></h1>
+  <div class="sub">This resolves your site directly from the Optimism contract, client-side. Optionally connect a wallet so on-chain reads use its RPC instead of a public one.</div>
+
+  <button id="btn-connect">Connect Wallet</button>
+  <button id="btn-skip" class="secondary">Continue without wallet</button>
+
+  <div id="status"></div>
+
+  <div class="rpc-field">
+    <label for="custom-rpc">Custom Optimism RPC (optional)</label>
+    <input type="text" id="custom-rpc" placeholder="https://mainnet.optimism.io" autocomplete="off" spellcheck="false">
+    <div class="hint">Tried after your connected wallet, before the public fallbacks. Saved in this browser for next time.</div>
+    <button type="button" id="btn-restore-rpc" class="rpc-restore">Restore Default RPC</button>
+  </div>
+
+  <div class="contract-line">
+    Optimism contract:
+    <a href="https://explorer.optimism.io/address/0x0000000000B28e06c885024Db22265b2536b24CC" target="_blank" rel="noopener">0x0000000000B28e06c885024Db22265b2536b24CC</a>
+  </div>
+</div>
+<script>
+(async () => {
+  const statusEl = document.getElementById('status');
+  const btnConnect = document.getElementById('btn-connect');
+  const btnSkip = document.getElementById('btn-skip');
+  const rpcInput = document.getElementById('custom-rpc');
+  const btnRestoreRpc = document.getElementById('btn-restore-rpc');
+
+  const RPC_STORAGE_KEY = 'b0x_custom_rpc';
+  try {
+    const saved = localStorage.getItem(RPC_STORAGE_KEY);
+    if (saved) rpcInput.value = saved;
+  } catch (e) { /* localStorage unavailable — just skip prefill */ }
+
+  // Save as the user types, not only once they click through — otherwise
+  // typing a value and reloading before clicking Connect/Skip loses it.
+  rpcInput.addEventListener('input', () => {
+    const value = rpcInput.value.trim();
+    try {
+      if (value) localStorage.setItem(RPC_STORAGE_KEY, value);
+      else localStorage.removeItem(RPC_STORAGE_KEY);
+    } catch (e) { /* localStorage unavailable — nothing to do */ }
+  });
+
+  btnRestoreRpc.addEventListener('click', () => {
+    rpcInput.value = '';
+    try { localStorage.removeItem(RPC_STORAGE_KEY); } catch (e) { /* localStorage unavailable */ }
+    rpcInput.focus();
+  });
+
+  function setStatus(msg, isErr) {
+    statusEl.textContent = msg;
+    statusEl.className = isErr ? 'err' : '';
+  }
+
+  function fatal(msg) {
+    setStatus(msg, true);
+    btnConnect.disabled = true;
+    btnSkip.disabled = true;
+  }
+
+  if (!('serviceWorker' in navigator)) {
+    fatal('This browser has no Service Worker support, so on-chain resolution can\'t run here.');
+    return;
+  }
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    fatal('Service Workers require HTTPS (or localhost).');
+    return;
+  }
+  // Some wallets (notably mobile in-app browsers like Rabby/MetaMask
+  // mobile) inject window.ethereum a beat after the page's own scripts
+  // start running, not synchronously at load - a single immediate check
+  // here false-negatives on those. Poll briefly and also listen for the
+  // de-facto "ethereum#initialized" event some providers dispatch, rather
+  // than concluding "no wallet" after just one look.
+  function detectEthereum(timeoutMs) {
+    if (window.ethereum) return Promise.resolve(window.ethereum);
+    return new Promise((resolve) => {
+      let settled = false;
+      function finish() {
+        if (settled) return;
+        settled = true;
+        clearInterval(poll);
+        clearTimeout(timer);
+        window.removeEventListener('ethereum#initialized', finish);
+        resolve(window.ethereum || null);
+      }
+      window.addEventListener('ethereum#initialized', finish, { once: true });
+      const poll = setInterval(() => { if (window.ethereum) finish(); }, 100);
+      const timer = setTimeout(finish, timeoutMs);
+    });
+  }
+
+  setStatus('Checking for wallet…');
+  await detectEthereum(1500);
+  if (!window.ethereum) {
+    btnConnect.disabled = true;
+    btnConnect.textContent = 'No wallet detected';
+  }
+  setStatus('');
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function stayOnHomepage(seconds) {
+    for (let remaining = seconds; remaining > 0; remaining--) {
+      setStatus(`Starting resolver in ${remaining}s…`);
+      await wait(1000);
+    }
+  }
+
+  function getCustomRpc() {
+    const value = rpcInput.value.trim();
+    if (!value) return '';
+    if (!/^https?:\/\//i.test(value)) {
+      setStatus('Custom RPC must start with http:// or https:// — ignoring it.', true);
+      return '';
+    }
+    return value;
+  }
+
+  async function proceed() {
+    btnConnect.disabled = true;
+    btnSkip.disabled = true;
+    rpcInput.disabled = true;
+
+    const customRpc = getCustomRpc();
+    await stayOnHomepage(3);
+    setStatus('Starting resolver…');
+    try {
+      await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      await navigator.serviceWorker.ready;
+      // A real navigation, not document.write (unreliable when called
+      // long after the original page load — it ran the resolved page's
+      // scripts but wouldn't reliably repaint). The worker lets plain
+      // navigations fall through to this same bootstrap page by design
+      // (so it always shows fresh), except this one specific marked
+      // navigation, which it resolves on-chain instead.
+      //
+      // Preserve whatever query string the visitor actually landed on
+      // (e.g. ?contract-info) by appending the marker alongside it rather
+      // than replacing it — the site's own JS reads that query string
+      // client-side once the real page loads, same as it always has.
+      let query = location.search ? location.search + '&__b0x_go=1' : '?__b0x_go=1';
+      if (customRpc) query += '&__b0x_rpc=' + encodeURIComponent(customRpc);
+      location.href = location.pathname + query;
+    } catch (e) {
+      fatal('Service worker registration failed: ' + e.message);
+    }
+  }
+
+  btnConnect.addEventListener('click', async () => {
+    try {
+      setStatus('Requesting wallet connection…');
+      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      // window.ethereum.selectedAddress now persists for this origin —
+      // the injected bridge on the resolved site will pick it up automatically.
+      await proceed();
+    } catch (e) {
+      setStatus('Wallet connection failed or was rejected: ' + (e.message || e), true);
+      btnConnect.disabled = false;
+      btnSkip.disabled = false;
+    }
+  });
+
+  btnSkip.addEventListener('click', proceed);
+})();
+</script>
+</body>
+</html>
