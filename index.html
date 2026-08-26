@@ -42,15 +42,39 @@
     background: transparent; border: 1px solid #24302b; color: #8fa39a; font-size: 0.72rem; font-weight: 500;
   }
   .rpc-field .rpc-restore:hover { border-color: #35d68a; color: #35d68a; }
+  .remember-tick {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    font-size: 0.76rem; color: #8fa39a; cursor: pointer; user-select: none;
+    margin: -2px 0 4px;
+  }
+  .remember-tick input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .remember-tick .tick-box {
+    width: 14px; height: 14px; border-radius: 4px; border: 1px solid #24302b;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: none; font-size: 10px; line-height: 1; color: #06120c;
+  }
+  .remember-tick input:checked + .tick-box { background: #35d68a; border-color: #35d68a; }
+  .remember-tick input:checked + .tick-box::after { content: '✓'; }
+  .remember-tick:hover .tick-box { border-color: #35d68a; }
 </style>
 </head>
 <body>
 <div class="card">
-  <h1><a href="https://wei.domains/#bzerox" style="color: green;">bzerox.wei</a></h1>
+  <h1>
+    <a href="https://wei.domains/#bzerox" style="color: green;">bzerox.wei</a>
+    &nbsp;·&nbsp;
+    <a href="https://gwei.domains/#bzerox" style="color: green;">bzerox.gwei</a>
+  </h1>
   <div class="sub">This resolves your site directly from the Optimism contract, client-side. Optionally connect a wallet so on-chain reads use its RPC instead of a public one.</div>
 
   <button id="btn-connect">Connect Wallet</button>
   <button id="btn-skip" class="secondary">Continue without wallet</button>
+
+  <label class="remember-tick" for="remember-choice">
+    <input type="checkbox" id="remember-choice">
+    <span class="tick-box" aria-hidden="true"></span>
+    Remember my choice
+  </label>
 
   <div id="status"></div>
 
@@ -63,7 +87,11 @@
 
   <div class="contract-line">
     Optimism contract:
-    <a href="https://explorer.optimism.io/address/0x0000000000B28e06c885024Db22265b2536b24CC" target="_blank" rel="noopener">0x0000000000B28e06c885024Db22265b2536b24CC</a>
+    <a href="https://optimistic.etherscan.io/address/0x0000000000B28e06c885024Db22265b2536b24CC" target="_blank" rel="noopener">0x0000000000B28e06c885024Db22265b2536b24CC</a>
+  </div>
+  <div class="contract-line">
+    Ethereum contract:
+    <a href="https://etherscan.io/address/0x0000000000B28e06c885024Db22265b2536b24CC" target="_blank" rel="noopener">0x0000000000B28e06c885024Db22265b2536b24CC</a>
   </div>
 </div>
 <script>
@@ -94,6 +122,26 @@
     rpcInput.value = '';
     try { localStorage.removeItem(RPC_STORAGE_KEY); } catch (e) { /* localStorage unavailable */ }
     rpcInput.focus();
+  });
+
+  const REMEMBER_KEY = 'b0x_remembered_choice';
+  const rememberTick = document.getElementById('remember-choice');
+
+  function getRememberedChoice() {
+    try { return localStorage.getItem(REMEMBER_KEY); } catch (e) { return null; }
+  }
+  function setRememberedChoice(choice) {
+    try { localStorage.setItem(REMEMBER_KEY, choice); } catch (e) { /* localStorage unavailable */ }
+  }
+  function clearRememberedChoice() {
+    try { localStorage.removeItem(REMEMBER_KEY); } catch (e) { /* localStorage unavailable */ }
+  }
+
+  rememberTick.checked = !!getRememberedChoice();
+  // Unticking is also how you cancel an in-progress auto-continue below —
+  // it just forgets the choice, and the countdown checks storage each tick.
+  rememberTick.addEventListener('change', () => {
+    if (!rememberTick.checked) clearRememberedChoice();
   });
 
   function setStatus(msg, isErr) {
@@ -175,6 +223,16 @@
 
     const customRpc = getCustomRpc();
     await stayOnHomepage(3);
+
+    if (window.ethereum && window.ethereum.selectedAddress) {
+      try {
+        setStatus('Switching wallet to Base…');
+        await switchToBase();
+      } catch (e) {
+        // Don't block handoff on this — the dApp can prompt again itself.
+      }
+    }
+
     setStatus('Starting resolver…');
     try {
       await navigator.serviceWorker.register('./sw.js', { scope: './' });
@@ -198,10 +256,78 @@
     }
   }
 
+  const OPTIMISM_CHAIN_ID = '0xa'; // 10
+  const OPTIMISM_CHAIN_PARAMS = {
+    chainId: OPTIMISM_CHAIN_ID,
+    chainName: 'OP Mainnet',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://mainnet.optimism.io'],
+    blockExplorerUrls: ['https://explorer.optimism.io'],
+  };
+
+  // The wallet may already be connected to this origin from a previous
+  // visit, sitting on whatever chain the resolved dApp switched it to
+  // last time (e.g. Base) — not Optimism, where this bootstrap's contract
+  // reads (relayed through the wallet in sw.js) actually need to run. Force
+  // it back to Optimism here, before proceeding, regardless of its current
+  // chain; the dApp itself is free to switch the wallet again afterwards.
+  async function switchToOptimism() {
+    try {
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: OPTIMISM_CHAIN_ID }],
+      });
+    } catch (e) {
+      if (e && e.code === 4902) {
+        await window.ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [OPTIMISM_CHAIN_PARAMS],
+        });
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  const BASE_CHAIN_ID = '0x2105'; // 8453
+  const BASE_CHAIN_PARAMS = {
+    chainId: BASE_CHAIN_ID,
+    chainName: 'Base',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://mainnet.base.org'],
+    blockExplorerUrls: ['https://basescan.org'],
+  };
+
+  // The resolved site's own dApp runs on Base, not Optimism — once the
+  // on-chain resolve this bootstrap does is done (or about to happen via
+  // the SW's wallet relay, which gracefully falls back to public Optimism
+  // RPC if the wallet is on the wrong chain), hand the wallet back to Base
+  // so the dApp works immediately without prompting the visitor itself.
+  async function switchToBase() {
+    try {
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: BASE_CHAIN_ID }],
+      });
+    } catch (e) {
+      if (e && e.code === 4902) {
+        await window.ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [BASE_CHAIN_PARAMS],
+        });
+      } else {
+        throw e;
+      }
+    }
+  }
+
   btnConnect.addEventListener('click', async () => {
+    if (rememberTick.checked) setRememberedChoice('connect');
     try {
       setStatus('Requesting wallet connection…');
       await window.ethereum.request({ method: 'eth_requestAccounts' });
+      setStatus('Switching wallet to Optimism…');
+      await switchToOptimism();
       // window.ethereum.selectedAddress now persists for this origin —
       // the injected bridge on the resolved site will pick it up automatically.
       await proceed();
@@ -212,7 +338,47 @@
     }
   });
 
-  btnSkip.addEventListener('click', proceed);
+  btnSkip.addEventListener('click', () => {
+    if (rememberTick.checked) setRememberedChoice('skip');
+    proceed();
+  });
+
+  // Back button restores this page from bfcache instead of re-running this
+  // script, so if proceed() had already disabled the buttons and set the
+  // "Starting resolver…" status before navigating away, that frozen state
+  // is what comes back. Reset it on restore so the buttons work again.
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return;
+    btnSkip.disabled = false;
+    rpcInput.disabled = false;
+    btnConnect.disabled = !window.ethereum;
+    btnConnect.textContent = window.ethereum ? 'Connect Wallet' : 'No wallet detected';
+    setStatus('');
+    // A remembered choice ticked before navigating away is exactly the case
+    // for auto-continuing again here — the script itself never re-ran, so
+    // nothing else will fire this on restore.
+    autoContinueIfRemembered();
+  });
+
+  // Returning visitor with a remembered choice: auto-fire it after a short,
+  // visibly-countable delay rather than instantly — same tick that armed it
+  // is the cancel switch, checked fresh each second so unticking (or a
+  // manual click on either button, which disables this one and no-ops the
+  // click() below) stops it cleanly.
+  async function autoContinueIfRemembered() {
+    const choice = getRememberedChoice();
+    if (!choice) return;
+    if (choice === 'connect' && !window.ethereum) return; // can't honor it here
+    const label = choice === 'connect' ? 'Connect Wallet' : 'Continue without wallet';
+    for (let remaining = 2; remaining > 0; remaining--) {
+      if (!getRememberedChoice()) { setStatus(''); return; }
+      setStatus(`Remembered — continuing as "${label}" in ${remaining}s… (untick to cancel)`);
+      await wait(1000);
+    }
+    if (!getRememberedChoice()) { setStatus(''); return; }
+    (choice === 'connect' ? btnConnect : btnSkip).click();
+  }
+  autoContinueIfRemembered();
 })();
 </script>
 </body>
